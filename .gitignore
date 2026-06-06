@@ -1,0 +1,19 @@
+# deps
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+# next
+.next/
+out/
+# env
+.env
+.env.local
+.env.*.local
+# weave / wandb
+wandb/
+.weave/
+# misc
+.DS_Store
+*.log
+.vercel

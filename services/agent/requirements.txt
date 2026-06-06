@@ -1,0 +1,12 @@
+# BLAST-RADIUS agent backend — pin/verify versions on-site (June 2026)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+langgraph>=0.2            # verify: from langgraph.types import Send, Command, interrupt
+langgraph-checkpoint>=2.0
+copilotkit                # Python SDK (CopilotKitState, langgraph helpers)
+ag-ui-langgraph>=0.0.40   # ag_ui.core.CustomEvent + EventEncoder
+redis>=5.0                # redis-py 8.x async client
+redisvl>=0.20.0           # SemanticMessageHistory for recovery memory
+weave>=0.52.0             # weave.init, @weave.op, weave.attributes, scorers
+openai>=1.40              # GPT-5.5
+python-dotenv>=1.0

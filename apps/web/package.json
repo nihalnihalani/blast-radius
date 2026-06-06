@@ -1,0 +1,25 @@
+{
+  "name": "blast-radius-web",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@copilotkit/react-core": "^1.59.5",
+    "@copilotkit/react-ui": "^1.59.5",
+    "@copilotkit/runtime": "^1.59.5",
+    "@xyflow/react": "^12.0.0",
+    "next": "^15.0.0",
+    "react": "^18.3.0",
+    "react-dom": "^18.3.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0",
+    "typescript": "^5.5.0"
+  },
+  "_note": "Verify @copilotkit versions on-site (npm ls); the /v2 hook subpath ships with 1.59.x. @xyflow/react is React Flow for the DAG."
+}
