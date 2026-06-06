@@ -50,6 +50,7 @@ Agents that take *destructive* actions — infra changes, deployments, credentia
 
 | Doc | What's in it |
 |---|---|
+| [`docs/AS_BUILT.md`](docs/AS_BUILT.md) | **What's actually implemented & verified running** + deviations from the plan |
 | [`docs/CONCEPT.md`](docs/CONCEPT.md) | Problem, idea, why-it-wins, devil's-advocate counter-case |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Three-plane system design + request/runaway lifecycles |
 | [`docs/COPILOTKIT_FEATURES.md`](docs/COPILOTKIT_FEATURES.md) | Every CopilotKit/AG-UI feature + exact verified APIs (v1.59.5) |
@@ -71,9 +72,23 @@ blast-radius/
 └── services/agent/           ← Python FastAPI + LangGraph agent (requirements + env scaffolded)
 ```
 
+## Run it
+
+```bash
+docker compose up -d                                                  # redis-stack on :6379
+cd services/agent && python3.12 -m venv .venv && . .venv/bin/activate \
+  && pip install -r requirements.txt && uvicorn main:app --port 8000  # backend
+cd apps/web && npm install && npm run dev                             # http://localhost:3000
+```
+No API keys required to run (Weave/OpenAI are optional). Click **Scale payments (happy path)** or
+**Simulate Runaway Agent**. Backend tests: `cd services/agent && pytest tests -q`.
+
 ## Status
 
-✅ **Plan complete & scrutinized.** The full build plan was produced by a multi-agent research + devil's-advocate review (which corrected live API versions and flagged the must-avoid pitfalls now baked into the docs). Scaffolding is in place. **Next: implement the vertical slice (see [`docs/BUILD_TIMELINE.md`](docs/BUILD_TIMELINE.md)).**
+✅ **Built & verified running end-to-end** (browser-tested: happy path with human-approval gates,
+and the runaway → circuit-breaker-trip → recovery self-healing loop). 7/7 backend integration tests
+pass against live Redis. See [`docs/AS_BUILT.md`](docs/AS_BUILT.md) for exactly what's implemented,
+the confirmed stack versions, and where reality diverged from the plan.
 
 ## Team
 

@@ -17,3 +17,8 @@ wandb/
 .DS_Store
 *.log
 .vercel
+
+# local dev
+services/agent/.venv/
+services/agent/pytest.ini
+.agents/

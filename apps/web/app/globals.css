@@ -2,16 +2,17 @@
 html, body { margin: 0; height: 100%; background: #09090b; color: #e4e4e7;
   font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
 
-.cockpit { display: flex; flex-direction: column; height: 100vh; }
-.cockpit__header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+.cockpit { display: flex; flex-direction: column; height: 100vh; position: relative; }
+.cockpit__header { display: flex; align-items: center; gap: 14px; padding: 12px 20px;
   border-bottom: 1px solid #27272a; }
-.cockpit__header h1 { font-size: 18px; margin: 0; }
+.cockpit__brand { font-size: 17px; font-weight: 800; letter-spacing: 0.3px; }
 .cockpit__sub { color: #71717a; font-size: 13px; }
 .controls { margin-left: auto; display: flex; gap: 8px; }
 
 .btn { background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 8px;
   padding: 8px 12px; font-size: 13px; cursor: pointer; }
 .btn:hover { background: #27272a; }
+.btn:disabled { opacity: 0.5; cursor: default; }
 .btn--danger { border-color: #7f1d1d; }
 .btn--approve { border-color: #14532d; background: #052e16; }
 .btn--reject { border-color: #7f1d1d; background: #2e0505; }
@@ -30,7 +31,17 @@ html, body { margin: 0; height: 100%; background: #09090b; color: #e4e4e7;
   100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
 }
 
-.approval { background: #18181b; border: 1px solid #3f3f46; border-radius: 12px; padding: 14px; }
-.approval__title { font-weight: 700; margin-bottom: 6px; }
-.approval__body { font-size: 13px; color: #a1a1aa; margin-bottom: 12px; }
-.approval__actions { display: flex; gap: 8px; }
+.breaker-banner { background: #2e0505; border-bottom: 1px solid #7f1d1d; color: #fca5a5;
+  padding: 10px 20px; font-size: 13px; }
+
+.hint { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  color: #52525b; font-size: 14px; text-align: center; pointer-events: none; }
+
+.approval-overlay { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; background: rgba(0,0,0,0.55); z-index: 10; }
+.approval { background: #18181b; border: 1px solid #f59e0b; border-radius: 14px; padding: 20px;
+  max-width: 420px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); }
+.approval__title { font-weight: 700; margin-bottom: 8px; font-size: 15px; }
+.approval__body { font-size: 13px; color: #a1a1aa; margin-bottom: 16px; line-height: 1.5; }
+.approval__actions { display: flex; gap: 10px; }
+.approval__actions .btn { padding: 9px 18px; font-weight: 600; }
