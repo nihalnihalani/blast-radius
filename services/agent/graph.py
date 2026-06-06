@@ -2,14 +2,17 @@
 
 orchestrator --(Send fan-out)--> validator* --> approval(interrupt) --> executor* --> recover
 
-Every node is a @weave.op. The breaker trip is detected inside the executor loop and written to
-shared state (breaker_open / tripped_node), which auto-streams to the cockpit as STATE_DELTA --
-the most RELIABLE path for the red pulse. A named AG-UI CustomEvent is ALSO emitted (events.py)
-for flair; the UI works off either. See docs/LANGGRAPH_ORCHESTRATION.md.
+The cockpit renders off the LangGraph STATE (streamed as AG-UI STATE_DELTA at every node
+boundary by the CopilotKit/ag-ui-langgraph adapter), so node-status updates flow through graph
+state via a concurrency-safe reducer (parallel Send writes would otherwise collide). We ALSO
+mirror state into RedisJSON for durability + the keyspace/breaker control plane + the split-screen
+key-browser demo. See docs/LANGGRAPH_ORCHESTRATION.md and docs/RISKS.md.
 
 Verify on-site: `from langgraph.types import Send, Command, interrupt` (import path varies by version).
 """
+import operator
 import uuid
+from typing import Annotated
 
 import weave
 from langgraph.graph import StateGraph, START, END
@@ -18,7 +21,7 @@ from langgraph.checkpoint.memory import MemorySaver
 
 try:
     from copilotkit import CopilotKitState  # state MUST extend this to auto-stream STATE_DELTA
-except Exception:  # allows importing the module before copilotkit is installed
+except Exception:  # allows importing this module before copilotkit is installed
     CopilotKitState = dict  # type: ignore
 
 from config import BREAKER_THRESHOLD
@@ -30,15 +33,22 @@ from events import emit_breaker_tripped
 from weave_setup import agent_attributes
 
 
+def _merge_nodes(a: dict, b: dict) -> dict:
+    """Reducer: shallow-merge node patches by id so parallel Send writes don't clobber.
+    Each writer returns the FULL node object for its id (spread of the existing node)."""
+    return {**(a or {}), **(b or {})}
+
+
 class BlastRadiusState(CopilotKitState):
     run_id: str
     request: str
-    dag_nodes: dict
+    dag_nodes: Annotated[dict, _merge_nodes]   # {node_id: {label,status,agent,destructive}}
+    edges: list                                 # [[from,to], ...]  (single writer: orchestrator)
     current: str
     simulate_runaway: bool
     breaker_open: bool
     tripped_node: str | None
-    completed: list
+    completed: Annotated[list, operator.add]
 
 
 @weave.op
@@ -49,7 +59,7 @@ async def orchestrator_node(state: BlastRadiusState):
     r = await get_redis()
     await write_dag(r, run_id, dag)
     return {"run_id": run_id, "request": request, "dag_nodes": dag["nodes"],
-            "breaker_open": False, "tripped_node": None, "completed": []}
+            "edges": dag["edges"], "breaker_open": False, "tripped_node": None}
 
 
 def fan_out_steps(state: BlastRadiusState):
@@ -59,13 +69,13 @@ def fan_out_steps(state: BlastRadiusState):
 
 @weave.op
 async def validator_node(state: BlastRadiusState):
-    node_id = state["current"]
+    nid = state["current"]
+    node = dict(state["dag_nodes"][nid])
     r = await get_redis()
-    with agent_attributes(f"validator-{node_id}", node_id, "CLOSED", state["run_id"]):
-        await set_node_status(r, state["run_id"], node_id, {"status": "running", "agent": f"validator-{node_id}"})
-        # (mock) validation work
-        await set_node_status(r, state["run_id"], node_id, {"status": "validated"})
-    return {}
+    with agent_attributes(f"validator-{nid}", nid, "CLOSED", state["run_id"]):
+        node = {**node, "status": "validated", "agent": f"validator-{nid}"}
+        await set_node_status(r, state["run_id"], nid, node)  # mirror to RedisJSON
+    return {"dag_nodes": {nid: node}}                          # stream to cockpit
 
 
 def route_after_validate(state: BlastRadiusState):
@@ -75,47 +85,55 @@ def route_after_validate(state: BlastRadiusState):
 
 @weave.op
 async def approval_node(state: BlastRadiusState):
-    """Graph-enforced human gate. Pairs with CopilotKit useInterrupt on the frontend."""
-    node_id = state["current"]
-    decision = interrupt({"node": node_id, "plan": state["dag_nodes"][node_id]})
-    return {"_approved": bool(decision.get("approved", False))}
+    """Graph-enforced human gate. Pairs with CopilotKit useLangGraphInterrupt/useInterrupt."""
+    nid = state["current"]
+    decision = interrupt({"node": nid, "plan": state["dag_nodes"][nid]})
+    approved = bool(decision.get("approved", False)) if isinstance(decision, dict) else bool(decision)
+    nid_patch = {**state["dag_nodes"][nid], "status": "approved" if approved else "blocked"}
+    return {"dag_nodes": {nid: nid_patch}}
 
 
 @weave.op
 async def executor_node(state: BlastRadiusState):
-    node_id = state["current"]
-    agent_id = f"executor-{node_id}"
+    nid = state["current"]
+    agent_id = f"executor-{nid}"
+    node = dict(state["dag_nodes"][nid])
     r = await get_redis()
-    await set_node_status(r, state["run_id"], node_id, {"status": "running", "agent": agent_id})
+    running = {**node, "status": "running", "agent": agent_id}
+    await set_node_status(r, state["run_id"], nid, running)
 
-    if state.get("simulate_runaway") and node_id == "update-lb":
-        # The runaway path: loop and fail. Trip the Redis breaker at the threshold,
-        # which is BELOW recursion_limit, so the animation fires before any GraphRecursionError.
+    if state.get("simulate_runaway") and nid == "update-lb":
+        # Runaway path: loop + fail. Trip the Redis breaker at the threshold (below recursion_limit)
+        # so the red pulse fires BEFORE any GraphRecursionError.
         for _ in range(BREAKER_THRESHOLD + 2):
             count = await record_failure(r, agent_id)
             if await is_open(r, agent_id):
-                with agent_attributes(agent_id, node_id, "OPEN", state["run_id"]):
-                    await set_node_status(r, state["run_id"], node_id, {"status": "failed"})
-                    await set_breaker(r, state["run_id"], True, node_id)
-                    await emit_breaker_tripped(node_id, agent_id, count)
-                    await remember_failure(agent_id, f"runaway scaling {node_id}, count={count}")
-                return Command(goto="recover", update={"breaker_open": True, "tripped_node": node_id})
+                with agent_attributes(agent_id, nid, "OPEN", state["run_id"]):
+                    failed = {**node, "status": "failed", "agent": agent_id}
+                    await set_node_status(r, state["run_id"], nid, failed)
+                    await set_breaker(r, state["run_id"], True, nid)
+                    await emit_breaker_tripped(nid, agent_id, count)
+                    await remember_failure(agent_id, f"runaway scaling {nid}, count={count}")
+                return Command(goto="recover", update={
+                    "dag_nodes": {nid: failed}, "breaker_open": True, "tripped_node": nid})
 
-    # happy path (mock apply)
-    with agent_attributes(agent_id, node_id, "CLOSED", state["run_id"]):
-        await set_node_status(r, state["run_id"], node_id, {"status": "done"})
-    return {"completed": state.get("completed", []) + [node_id]}
+    with agent_attributes(agent_id, nid, "CLOSED", state["run_id"]):
+        done = {**node, "status": "done", "agent": agent_id}
+        await set_node_status(r, state["run_id"], nid, done)
+    return {"dag_nodes": {nid: done}, "completed": [nid]}
 
 
 @weave.op
 async def recover_node(state: BlastRadiusState):
     r = await get_redis()
-    node_id = state.get("tripped_node")
-    with agent_attributes("recovery", node_id, "HALF_OPEN", state["run_id"]):
-        result = await run_recovery(r, state["run_id"], node_id)
-        await set_node_status(r, state["run_id"], node_id, {"status": "done", "agent": "recovery"})
+    nid = state.get("tripped_node")
+    node = dict(state["dag_nodes"][nid])
+    with agent_attributes("recovery", nid, "HALF_OPEN", state["run_id"]):
+        result = await run_recovery(r, state["run_id"], nid)
+        done = {**node, "status": "done", "agent": "recovery"}
+        await set_node_status(r, state["run_id"], nid, done)
         await set_breaker(r, state["run_id"], False, None)
-    return {"breaker_open": False, "tripped_node": None, "recovery": result}
+    return {"dag_nodes": {nid: done}, "breaker_open": False, "tripped_node": None, "recovery": result}
 
 
 def build_graph():
@@ -131,8 +149,7 @@ def build_graph():
     g.add_conditional_edges("validator", route_after_validate, ["approval", "executor"])
     g.add_edge("approval", "executor")
     g.add_edge("recover", END)
-    # executor -> END or recover is handled via Command(goto=...) returns above
+    # executor -> END (return) or -> recover (Command(goto=...)) is decided inside the node
 
-    # checkpointer REQUIRED for interrupt() to pause/resume. CopilotKit may inject its own;
-    # MemorySaver is safe for sync+async and fine for the hackathon.
+    # checkpointer REQUIRED for interrupt() to pause/resume. MemorySaver is safe for sync+async.
     return g.compile(checkpointer=MemorySaver())

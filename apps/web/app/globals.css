@@ -1,0 +1,36 @@
+:root { color-scheme: dark; }
+html, body { margin: 0; height: 100%; background: #09090b; color: #e4e4e7;
+  font-family: ui-sans-serif, system-ui, -apple-system, sans-serif; }
+
+.cockpit { display: flex; flex-direction: column; height: 100vh; }
+.cockpit__header { display: flex; align-items: center; gap: 16px; padding: 12px 20px;
+  border-bottom: 1px solid #27272a; }
+.cockpit__header h1 { font-size: 18px; margin: 0; }
+.cockpit__sub { color: #71717a; font-size: 13px; }
+.controls { margin-left: auto; display: flex; gap: 8px; }
+
+.btn { background: #18181b; color: #e4e4e7; border: 1px solid #3f3f46; border-radius: 8px;
+  padding: 8px 12px; font-size: 13px; cursor: pointer; }
+.btn:hover { background: #27272a; }
+.btn--danger { border-color: #7f1d1d; }
+.btn--approve { border-color: #14532d; background: #052e16; }
+.btn--reject { border-color: #7f1d1d; background: #2e0505; }
+
+.dag-canvas { flex: 1; min-height: 0; }
+.dag-node { background: #18181b; border: 2px solid #3f3f46; border-radius: 10px;
+  padding: 10px 14px; min-width: 150px; }
+.dag-node__label { font-size: 13px; font-weight: 600; }
+.dag-node__status { font-size: 11px; margin-top: 4px; text-transform: capitalize; }
+
+/* the jaw-drop: red pulse on the tripped node */
+.pulse-red { animation: pulseRed 0.7s ease-in-out infinite; border-color: #ef4444 !important; }
+@keyframes pulseRed {
+  0%   { box-shadow: 0 0 0 0 rgba(239,68,68,0.7); }
+  70%  { box-shadow: 0 0 0 14px rgba(239,68,68,0); }
+  100% { box-shadow: 0 0 0 0 rgba(239,68,68,0); }
+}
+
+.approval { background: #18181b; border: 1px solid #3f3f46; border-radius: 12px; padding: 14px; }
+.approval__title { font-weight: 700; margin-bottom: 6px; }
+.approval__body { font-size: 13px; color: #a1a1aa; margin-bottom: 12px; }
+.approval__actions { display: flex; gap: 8px; }
