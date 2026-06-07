@@ -34,20 +34,23 @@ where reality diverged from the original plan (and why). Stack versions are pinn
    `LangGraphAgent` → `LangGraphAGUIAgent`; `add_fastapi_endpoint` lives in
    `copilotkit.integrations.fastapi`. Fixed in `main.py`.
 
-2. **CopilotKit runtime did not surface the remote agent to the frontend** (`No default agent
-   provided` / `No agents registered`). Two changes fixed agent resolution:
-   - The backend serves a **raw AG-UI endpoint at `/agent`** via `ag_ui_langgraph.add_langgraph_fastapi_endpoint`.
-   - The frontend registers it **client-side** via `agents__unsafe_dev_only={{ infra_orchestrator: new HttpAgent({url}) }}`
-     in `app/providers.tsx` (CopilotKit `@ag-ui/client` HttpAgent).
+2. **The cockpit is driven entirely over the AG-UI protocol (no bespoke SSE).** The backend
+   serves the LangGraph agent as a raw AG-UI endpoint at `/agent` (`ag_ui_langgraph`), and the
+   browser consumes it directly with CopilotKit's **`@ag-ui/client` `HttpAgent`**
+   (`apps/web/lib/useBlastAgent.ts`):
+   - `STATE_SNAPSHOT` / `STATE_DELTA` events → the live DAG (`agent.state.dag_nodes`).
+   - the `on_interrupt` **CUSTOM event** (value `{node, plan}` arrives as a JSON string — parse it)
+     → the human-approval gate.
+   - resume = `agent.runAgent({ forwardedProps: { command: { resume: "approved" } } })` on the
+     **same `threadId`**, continuing the LangGraph checkpoint to the next interrupt.
 
-3. **The cockpit DAG is driven by a dedicated, reliable channel — not CopilotKit state-sync.**
-   CopilotKit's `useCoAgent` state application proved version-fragile, so (per our own
-   `RISKS.md` demo-safety rule) the DAG renders from a backend channel we fully control:
-   - `POST /demo/run {simulate_runaway}` → starts a run, returns `run_id`.
-   - `GET /events/dag/{run_id}` → **SSE** streaming the live RedisJSON DAG document on every change.
-   - `POST /demo/resume {run_id, approved}` → resolves the LangGraph `interrupt()` approval gate.
-   The CopilotKit sidebar + AG-UI agent remain wired (the agent itself streams `STATE_SNAPSHOT`
-   events correctly — verified by probing `/agent`), so the generative-UI story is intact.
+   Why not CopilotKit's `useCoAgent` runtime path: in this exact version combo (JS `@copilotkit/*`
+   1.59.5 + Python `copilotkit` 0.1.94) the runtime's agent discovery reported "No agents
+   registered" / "No default agent", so `useCoAgent().run()` never reached the agent. The
+   `@ag-ui/client` `HttpAgent` **is** CopilotKit's own AG-UI protocol library and works directly
+   (verified standalone in Node: 12 snapshots, `on_interrupt`, `RUN_FINISHED`). **Browser gotcha:**
+   pass the subscriber to `runAgent(params, subscriber)` — persistent `agent.subscribe()`
+   subscribers do **not** receive run events.
 
 4. **The execution harness uses map-reduce + a sequential HITL loop.** Parallel `Send` fan-out for
    validation (real multi-agent parallelism), then a `router → approval(interrupt) → executor`

@@ -17,7 +17,7 @@ from weave_setup import init_weave
 from redis_client import get_redis, close_redis
 from breaker import keyspace_listener, force_reset
 from streams import ensure_group, seed_dlq
-from dag import read_dag, set_node_status
+from dag import read_dag
 from graph import build_graph
 
 # Background tasks + a fan-out of subscribers for the breaker control plane.
@@ -116,93 +116,19 @@ async def breaker_events() -> StreamingResponse:
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-# --- Run manager: drive the graph + stream the DAG over SSE (reliable cockpit channel) ----
-# The CopilotKit useCoAgent state-sync is version-fragile; this direct channel guarantees the
-# cockpit renders. It runs the SAME graph (interrupts, breaker, recovery) and streams the
-# RedisJSON DAG document as it changes. CopilotKit hooks remain wired as the "intended" path.
-import uuid as _uuid
-from langgraph.types import Command
+# NOTE: The cockpit is driven entirely over the AG-UI protocol (the /agent endpoint above,
+# consumed by @ag-ui/client in the frontend) — there is no bespoke DAG/SSE channel. The only
+# remaining SSE here is the Redis keyspace control plane (/events/breaker), which is a Redis
+# feature demo, independent of the agent run.
 
 
-class _Run:
-    def __init__(self):
-        self.resume: asyncio.Queue = asyncio.Queue()
-        self.awaiting: str | None = None
-        self.done = False
-
-
-_runs: dict[str, _Run] = {}
-
-
-async def _drive_run(run_id: str, simulate_runaway: bool):
+# --- Control + introspection endpoints ----------------------------------------
+@app.post("/demo/force-reset")
+async def demo_force_reset(req: Request):
+    body = await req.json()
     r = await get_redis()
-    cfg = {"configurable": {"thread_id": run_id}, "recursion_limit": 60}
-    state = {"run_id": run_id, "request": "Scale the payments service",
-             "simulate_runaway": simulate_runaway}
-    try:
-        res = await GRAPH.ainvoke(state, cfg)
-        while isinstance(res, dict) and res.get("__interrupt__"):
-            intr = res["__interrupt__"][0]
-            node = (getattr(intr, "value", {}) or {}).get("node")
-            _runs[run_id].awaiting = node
-            if node:
-                await set_node_status(r, run_id, node, {"status": "awaiting-approval"})
-            decision = await _runs[run_id].resume.get()          # "approved" / "rejected"
-            _runs[run_id].awaiting = None
-            res = await GRAPH.ainvoke(Command(resume=decision), cfg)
-    except Exception as e:
-        import traceback
-        print(f"[run {run_id}] error: {e}")
-        traceback.print_exc()
-    finally:
-        _runs[run_id].done = True
-        try:
-            await r.json().merge(f"dag:run:{run_id}", "$", {"_done": True})
-        except Exception:
-            pass
-
-
-@app.post("/demo/run")
-async def demo_run(req: Request):
-    body = await req.json()
-    run_id = _uuid.uuid4().hex
-    _runs[run_id] = _Run()
-    asyncio.create_task(_drive_run(run_id, bool(body.get("simulate_runaway", False))))
-    return {"run_id": run_id}
-
-
-@app.post("/demo/resume")
-async def demo_resume(req: Request):
-    body = await req.json()
-    run = _runs.get(body.get("run_id", ""))
-    if not run:
-        return {"ok": False, "error": "unknown run"}
-    await run.resume.put("approved" if body.get("approved") else "rejected")
+    await force_reset(r, body.get("agent_id", "executor-update-lb"))
     return {"ok": True}
-
-
-@app.get("/events/dag/{run_id}")
-async def dag_events(run_id: str) -> StreamingResponse:
-    """Stream the live DAG document (RedisJSON) to the cockpit as it changes."""
-    async def gen() -> AsyncIterator[str]:
-        r = await get_redis()
-        last = None
-        for _ in range(1200):                                    # ~6 min cap @ 300ms
-            doc = await read_dag(r, run_id)
-            if doc:
-                s = json.dumps(doc)
-                if s != last:
-                    last = s
-                    yield f"data: {s}\n\n"
-                if doc.get("_done"):
-                    break
-            await asyncio.sleep(0.3)
-        yield "event: end\ndata: {}\n\n"
-
-    return StreamingResponse(gen(), media_type="text/event-stream")
-
-
-# --- Demo control + introspection endpoints ----------------------------------
 @app.post("/demo/force-reset")
 async def demo_force_reset(req: Request):
     body = await req.json()
