@@ -64,14 +64,23 @@ where reality diverged from the original plan (and why). Stack versions are pinn
 6. **Demo pacing** (`DEMO_STEP_DELAY`, `DEMO_BREAKER_HOLD`) keeps the breaker-open state visible on
    stage; set both to `0` for instant runs (and in tests).
 
-## What's real vs mocked (for the Q&A)
+## What's real (no mock)
 
-- **Real:** the LangGraph multi-agent graph, parallel `Send` fan-out, graph-enforced `interrupt()`
-  approvals, the Redis circuit breaker (atomic Lua `INCR`+`SET EX`), Keyspace Notifications →
-  breaker SSE, Streams work bus + dead-letter queue, RedisJSON DAG doc, Weave tracing, the recovery
-  agent consuming the DLQ.
-- **Mocked (deliberately, for demo safety):** the infra actions themselves (no real cloud mutations);
-  the "scale payments" DAG template is fixed.
+Everything executes for real against live Docker (`services/agent/docker_ops.py`):
+- **`scale-payments`** → `docker run`/remove real `traefik/whoami` replicas (`blast-pay-N`).
+- **`update-lb`** → rewrite the real nginx upstream + `nginx -s reload` on the real `blast-lb`.
+- **`healthcheck`** → real HTTP GET through the LB (returns the live backend hostname).
+- **runaway** → a real crash-looping container; the **breaker counts its real Docker restart
+  failures** and `docker kill`s it (the kill-switch); recovery applies a known-good LB config.
+
+Plus the rest of the harness: LangGraph multi-agent graph, parallel `Send` fan-out, graph-enforced
+`interrupt()` gates, the Redis circuit breaker (atomic Lua `INCR`+`SET EX`), Keyspace Notifications,
+Streams + DLQ, RedisJSON DAG doc, durable Redis checkpointer, Weave tracing.
+
+**Safety:** every Docker op is scoped to containers labelled `blast.managed=true` with the
+`blast-` name prefix on the dedicated `blast-net` network — it never touches anything else, and
+replica count is hard-capped (`MAX_REPLICAS`). The managed target is a self-contained sample
+stack, not your production cloud.
 
 ## Run it
 

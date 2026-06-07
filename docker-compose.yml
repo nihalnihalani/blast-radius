@@ -1,5 +1,9 @@
 # One-command full stack:  docker compose up --build
-#   redis-stack :6379 (+ RedisInsight :8001) · agent :8000 · cockpit :3000
+#   redis-stack :6379 (+ RedisInsight :8001) · agent :8000 · cockpit :3000 · managed LB :8090
+#
+# The agent manages REAL Docker containers, so it needs the Docker socket. The default mount is
+# /var/run/docker.sock; on colima/podman set DOCKER_SOCK to your host socket, e.g.
+#   DOCKER_SOCK=$HOME/.colima/default/docker.sock docker compose up --build
 services:
   redis:
     image: redis/redis-stack:latest
@@ -19,9 +23,14 @@ services:
       REDIS_URL: redis://redis:6379
       ALLOWED_ORIGINS: http://localhost:3000
       CHECKPOINTER: redis
-      WEAVE_DISABLED: "1"          # set a WANDB_API_KEY + remove this to enable Weave tracing
-      # OPENAI_API_KEY: sk-...     # set to make the validator use GPT
-    ports: ["8000:8000"]
+      WEAVE_DISABLED: "1"                       # set WANDB_API_KEY + remove to enable Weave
+      DOCKER_HOST: unix:///var/run/docker.sock
+      LB_HEALTH_URL: http://host.docker.internal:8090/   # reach the host-published LB
+      # OPENAI_API_KEY: sk-...                  # set to make the validator use GPT
+    volumes:
+      - ${DOCKER_SOCK:-/var/run/docker.sock}:/var/run/docker.sock
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    ports: ["8000:8000", "8090:8090"]           # 8090 = the agent-managed load balancer
     depends_on:
       redis:
         condition: service_healthy

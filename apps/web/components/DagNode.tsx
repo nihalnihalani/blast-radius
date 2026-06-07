@@ -15,6 +15,7 @@ export function DagNode({ data }: { data: TNode & { tripped?: boolean } }) {
       <div className="dag-node__status" style={{ color }}>
         {data.status}{data.agent ? ` · ${data.agent}` : ""}
       </div>
+      {data.detail && <div className="dag-node__detail">{data.detail}</div>}
       <Handle type="source" position={Position.Right} />
     </div>
   );

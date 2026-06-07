@@ -7,6 +7,8 @@ export interface DagNode {
   status: NodeStatus;
   agent: string | null;
   destructive: boolean;
+  detail?: string;
+  validation?: string;
 }
 
 /** The DAG document streamed from the backend (RedisJSON). */

@@ -23,6 +23,7 @@ from breaker import keyspace_listener, force_reset
 from streams import ensure_group, seed_dlq
 from dag import read_dag
 from graph import build_graph
+import docker_ops as infra
 
 configure_logging()
 log = get_logger("blast.main")
@@ -47,6 +48,11 @@ async def _fan_out_trips() -> None:
 async def lifespan(app: FastAPI):
     init_weave()
     await setup_checkpointer()
+    try:
+        await asyncio.to_thread(infra.ensure_network)         # real infra network
+        log.info("docker infra ready (network=%s)", infra.NETWORK)
+    except Exception as e:
+        log.warning("docker infra unavailable at startup: %s", e)
     r = await get_redis()
     await ensure_group(r)
     # Pre-seed one DLQ message so 'Resume with safe fallback' is instant during the demo.
@@ -152,6 +158,22 @@ async def demo_dag(run_id: str):
     """Inspect the live DAG document in RedisJSON (introspection / tests)."""
     r = await get_redis()
     return await read_dag(r, run_id) or {"error": "not found"}
+
+
+@app.get("/infra/status")
+async def infra_status():
+    """Live state of the REAL infrastructure the agent manages (containers + LB health)."""
+    try:
+        return await asyncio.to_thread(infra.infra_status)
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"error": str(e)})
+
+
+@app.post("/infra/reset")
+async def infra_reset():
+    """Tear down all blast-managed containers for a clean slate."""
+    removed = await asyncio.to_thread(infra.cleanup)
+    return {"removed": removed}
 
 
 @app.get("/healthz")

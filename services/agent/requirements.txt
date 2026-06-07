@@ -11,3 +11,4 @@ weave>=0.52.0             # weave.init, @weave.op, weave.attributes, scorers
 openai>=1.40              # GPT-5.5
 python-dotenv>=1.0
 langgraph-checkpoint-redis>=0.4.0   # durable Redis checkpointer
+docker>=7.0                 # real infra operations (Docker SDK)

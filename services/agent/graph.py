@@ -30,6 +30,34 @@ from langgraph.types import Send, Command, interrupt
 
 from checkpointer import get_checkpointer
 from llm import validate_step
+import docker_ops as infra
+from docker_ops import DEFAULT_REPLICAS
+
+# Each DAG node maps to a REAL infrastructure operation (no mocks). Executing a node performs
+# the operation; the result detail is stored on the node for the cockpit to show.
+INFRA_OPS = {
+    "validate-iam": lambda: infra.validate_iam(),
+    "check-deps": lambda: infra.check_deps(),
+    "scale-payments": lambda: infra.scale_payments(DEFAULT_REPLICAS),
+    "update-lb": lambda: {"lb": infra.update_lb(), "health": infra.healthcheck()},
+    "healthcheck": lambda: infra.healthcheck(),
+}
+
+
+def _detail(nid: str, result) -> str:
+    """One-line human summary of a real op result for the node card."""
+    try:
+        if nid == "scale-payments":
+            return f"{result.get('count')} replicas live"
+        if nid == "update-lb":
+            return f"{len(result['lb']['backends'])} backends · health {'ok' if result['health'].get('ok') else 'fail'}"
+        if nid == "healthcheck":
+            return f"served by {result.get('served_by', '?')}" if result.get("ok") else "unhealthy"
+        if nid in ("validate-iam", "check-deps"):
+            return result.get("reason", "ok")
+    except Exception:
+        pass
+    return "done"
 
 try:
     from copilotkit import CopilotKitState  # state extends this to auto-stream STATE_DELTA
@@ -169,22 +197,34 @@ async def executor_node(state: BlastRadiusState):
         await asyncio.sleep(_STEP_DELAY)                       # let "running" (yellow) be seen
 
     if state.get("simulate_runaway") and nid == "update-lb":
-        # Runaway: loop + fail. Trip the Redis breaker at the threshold (below recursion_limit)
-        # so the red pulse fires BEFORE any GraphRecursionError.
-        for _ in range(BREAKER_THRESHOLD + 2):
-            count = await record_failure(r, agent_id)
+        # REAL runaway: start a crash-looping container; count its real Docker failures into the
+        # Redis breaker; when the breaker opens, REAL `docker kill` the runaway, then recover.
+        await asyncio.to_thread(infra.start_runaway)
+        observed = 0
+        for _ in range(BREAKER_THRESHOLD + 8):
+            await asyncio.sleep(0.4)
+            fails = await asyncio.to_thread(infra.runaway_failures)
+            count = 0
+            while observed < fails:                            # one breaker INCR per real failure
+                count = await record_failure(r, agent_id)
+                observed += 1
             if await is_open(r, agent_id):
+                killed = await asyncio.to_thread(infra.kill_runaway)
                 with agent_attributes(agent_id, nid, "OPEN", state["run_id"]):
-                    failed = {**node, "status": "failed", "agent": agent_id}
+                    failed = {**node, "status": "failed", "agent": agent_id,
+                              "detail": f"runaway killed ({observed} real failures)"}
                     await set_node_status(r, state["run_id"], nid, failed)
                     await set_breaker(r, state["run_id"], True, nid)
-                    await emit_breaker_tripped(nid, agent_id, count)
-                    await remember_failure(agent_id, f"runaway scaling {nid}, count={count}")
+                    await emit_breaker_tripped(nid, agent_id, observed)
+                    await remember_failure(agent_id, f"runaway on {nid}, killed={killed}")
                 return Command(goto="recover", update={
                     "dag_nodes": {nid: failed}, "breaker_open": True, "tripped_node": nid})
 
+    # Normal path: perform the REAL infrastructure operation for this node.
     with agent_attributes(agent_id, nid, "CLOSED", state["run_id"]):
-        done = {**node, "status": "done", "agent": agent_id}
+        op_fn = INFRA_OPS.get(nid)
+        result = await asyncio.to_thread(op_fn) if op_fn else {}
+        done = {**node, "status": "done", "agent": agent_id, "detail": _detail(nid, result)}
         await set_node_status(r, state["run_id"], nid, done)
     return {"dag_nodes": {nid: done}, "completed": [nid], "idx": state["idx"] + 1}
 
@@ -200,12 +240,15 @@ async def recover_node(state: BlastRadiusState):
     interrupt({"node": nid, "recovery": True,
                "plan": {"label": node.get("label", nid), "action": "Resume with safe fallback"}})
     with agent_attributes("recovery", nid, "HALF_OPEN", state["run_id"]):
-        result = await run_recovery(r, state["run_id"], nid)
-        done = {**node, "status": "done", "agent": "recovery"}
+        dlq = await run_recovery(r, state["run_id"], nid)
+        # REAL recovery: apply a known-good LB config to the live replicas + verify health.
+        safe = await asyncio.to_thread(lambda: {"lb": infra.update_lb(), "health": infra.healthcheck()})
+        done = {**node, "status": "done", "agent": "recovery",
+                "detail": f"recovered · {_detail('update-lb', safe)}"}
         await set_node_status(r, state["run_id"], nid, done)
         await set_breaker(r, state["run_id"], False, None)
     return {"dag_nodes": {nid: done}, "breaker_open": False, "tripped_node": None,
-            "idx": state["idx"] + 1, "recovery": result}
+            "idx": state["idx"] + 1, "recovery": {"dlq": dlq, "safe": safe}}
 
 
 def build_graph():

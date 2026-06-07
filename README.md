@@ -99,8 +99,9 @@ No API keys required to run (Weave/OpenAI are optional). Click **Scale payments 
 | **Health** | ✅ `/healthz` (liveness) + `/readyz` (Redis readiness) |
 | **Input validation / errors** | ✅ Pydantic request models, global exception handler, env-driven CORS; frontend error banner + error boundary |
 | **LLM** | ✅ Optional OpenAI risk-validation (gated on `OPENAI_API_KEY`, deterministic fallback) |
-| **Containers / CI** | ✅ Dockerfiles + full `docker-compose`; GitHub Actions (backend pytest on redis-stack + frontend typecheck/build) |
-| **Known limits** | infra actions are deterministic mocks (demo safety); no auth/multi-tenancy/rate-limiting yet; CopilotKit *React hooks* unused (the cockpit uses the AG-UI protocol via `@ag-ui/client` — see [`docs/AS_BUILT.md`](docs/AS_BUILT.md)) |
+| **Real infrastructure (no mock)** | ✅ The agent operates **live Docker containers** — a pool of `traefik/whoami` "payments" replicas behind a real **nginx** load balancer. DAG steps really scale containers, rewrite + reload the LB, run real HTTP health checks, and the breaker really `docker kill`s a runaway container. Scoped to `blast.managed` containers only (never touches anything else); replica count hard-capped. |
+| **Containers / CI** | ✅ Dockerfiles + full `docker-compose` (the agent mounts the Docker socket); GitHub Actions (backend pytest on redis-stack + frontend typecheck/build) |
+| **Known limits** | the managed target is a self-contained sample stack (not your prod cloud); no auth/multi-tenancy/rate-limiting yet; CopilotKit *React hooks* unused — the cockpit uses the AG-UI protocol via `@ag-ui/client` (see [`docs/AS_BUILT.md`](docs/AS_BUILT.md)) |
 
 ## Status
 
