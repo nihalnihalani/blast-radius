@@ -8,6 +8,11 @@ REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 WEAVE_PROJECT = os.getenv("WEAVE_PROJECT", "blast-radius")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.5")  # fall back to gpt-4o if unavailable
 AGENT_NAME = os.getenv("AGENT_NAME", "infra_orchestrator")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
+
+# Comma-separated browser origins allowed to call the API (the cockpit).
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv(
+    "ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if o.strip()]
 
 # Circuit-breaker demo tuning
 BREAKER_THRESHOLD = int(os.getenv("BREAKER_THRESHOLD", "5"))       # trip at N failures

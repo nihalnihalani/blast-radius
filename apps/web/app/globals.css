@@ -36,6 +36,9 @@ html, body { margin: 0; height: 100%; background: #09090b; color: #e4e4e7;
 .breaker-banner { background: #2e0505; border-bottom: 1px solid #7f1d1d; color: #fca5a5;
   padding: 10px 20px; font-size: 13px; }
 
+.error-banner { background: #3b0a0a; border-bottom: 1px solid #b91c1c; color: #fecaca;
+  padding: 10px 20px; font-size: 13px; }
+
 /* approval rendered by useLangGraphInterrupt inside the CopilotKit chat */
 .approval-inline { background: #1c1917; border: 1px solid #f59e0b; border-radius: 12px;
   padding: 14px; margin: 6px 0; }

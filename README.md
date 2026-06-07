@@ -74,14 +74,33 @@ blast-radius/
 
 ## Run it
 
+**One command (full stack — redis + agent + cockpit):**
 ```bash
-docker compose up -d                                                  # redis-stack on :6379
+docker compose up --build      # → cockpit at http://localhost:3000
+```
+
+**Or locally for dev:**
+```bash
+docker compose up -d redis                                           # redis-stack on :6379
 cd services/agent && python3.12 -m venv .venv && . .venv/bin/activate \
-  && pip install -r requirements.txt && uvicorn main:app --port 8000  # backend
-cd apps/web && npm install && npm run dev                             # http://localhost:3000
+  && pip install -r requirements.txt && uvicorn main:app --port 8000 # backend (:8000)
+cd apps/web && npm install && npm run dev                            # cockpit (:3000)
 ```
 No API keys required to run (Weave/OpenAI are optional). Click **Scale payments (happy path)** or
-**Simulate Runaway Agent**. Backend tests: `cd services/agent && pytest tests -q`.
+**Simulate Runaway Agent**. Tests: `cd services/agent && pytest tests -q` (8 pass).
+
+## Production hardening
+
+| Concern | Status |
+|---|---|
+| **Durable agent state** | ✅ Redis-backed LangGraph checkpointer (`langgraph-checkpoint-redis`) — in-flight/interrupted runs survive a restart. Falls back to in-memory. |
+| **Human-in-the-loop** | ✅ Destructive-step gates **and** a "Resume with safe fallback" recovery gate, all over AG-UI `interrupt()` |
+| **Observability** | ✅ Structured logging; Weave tracing + `weave.attributes(breaker_state)`; `RunawayScorer` for Weave Monitors |
+| **Health** | ✅ `/healthz` (liveness) + `/readyz` (Redis readiness) |
+| **Input validation / errors** | ✅ Pydantic request models, global exception handler, env-driven CORS; frontend error banner + error boundary |
+| **LLM** | ✅ Optional OpenAI risk-validation (gated on `OPENAI_API_KEY`, deterministic fallback) |
+| **Containers / CI** | ✅ Dockerfiles + full `docker-compose`; GitHub Actions (backend pytest on redis-stack + frontend typecheck/build) |
+| **Known limits** | infra actions are deterministic mocks (demo safety); no auth/multi-tenancy/rate-limiting yet; CopilotKit *React hooks* unused (the cockpit uses the AG-UI protocol via `@ag-ui/client` — see [`docs/AS_BUILT.md`](docs/AS_BUILT.md)) |
 
 ## Status
 

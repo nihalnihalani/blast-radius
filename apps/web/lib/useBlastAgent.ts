@@ -4,9 +4,12 @@ import { HttpAgent, type AgentSubscriber } from "@ag-ui/client";
 import type { DagNode } from "./types";
 
 // Pure AG-UI protocol client (CopilotKit's @ag-ui/client). The browser speaks AG-UI directly to
-// the Python LangGraph agent at /agent: STATE_SNAPSHOT/STATE_DELTA drive the live DAG, the
-// `on_interrupt` CUSTOM event surfaces the human-approval gate, and resume re-runs the same
-// thread with forwardedProps.command.resume. No bespoke transport — this is the AG-UI standard.
+// the Python LangGraph agent at /agent:
+//   • STATE_SNAPSHOT / STATE_DELTA  -> the live DAG
+//   • on_interrupt CUSTOM event     -> human-approval gate (destructive step) / "resume with safe
+//                                       fallback" recovery gate (value.recovery)
+//   • CIRCUIT_BREAKER_TRIPPED CUSTOM event -> the red-pulse (event-driven, with state as backup)
+//   • resume = runAgent({forwardedProps:{command:{resume}}}) on the same threadId
 const AGENT_URL = process.env.NEXT_PUBLIC_AGENT_HTTP_URL ?? "http://localhost:8000/agent";
 
 export interface AgentState {
@@ -20,7 +23,8 @@ export interface AgentState {
 
 export interface InterruptInfo {
   node: string;
-  plan: { label?: string; destructive?: boolean };
+  recovery?: boolean;
+  plan: { label?: string; destructive?: boolean; action?: string };
 }
 
 export function useBlastAgent() {
@@ -28,8 +32,11 @@ export function useBlastAgent() {
   const [state, setStateObj] = useState<AgentState | null>(null);
   const [interrupt, setInterrupt] = useState<InterruptInfo | null>(null);
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Set by the CIRCUIT_BREAKER_TRIPPED CustomEvent — drives the pulse immediately (event-driven),
+  // independent of the state snapshot. Cleared when the run finishes.
+  const [breakerEventNode, setBreakerEventNode] = useState<string | null>(null);
 
-  // Read the client's authoritative merged state and accumulate nodes (snapshots are per-node).
   const applyState = useCallback(() => {
     const s = agentRef.current?.state as AgentState | undefined;
     if (!s) return;
@@ -39,20 +46,29 @@ export function useBlastAgent() {
       dag_nodes: { ...(prev?.dag_nodes ?? {}), ...(s.dag_nodes ?? {}) },
       edges: s.edges && s.edges.length ? s.edges : prev?.edges,
     }));
+    if (s.breaker_open === false) setBreakerEventNode(null);   // breaker recovered -> stop the pulse
   }, []);
 
   const makeSubscriber = useCallback((): AgentSubscriber => ({
     onStateSnapshotEvent: () => applyState(),
     onStateDeltaEvent: () => applyState(),
     onCustomEvent: (p: { event: { name?: string; value?: unknown } }) => {
-      if (p.event?.name === "on_interrupt") {
-        let v: unknown = p.event.value;
-        if (typeof v === "string") { try { v = JSON.parse(v); } catch { /* keep string */ } }
+      const { name, value } = p.event ?? {};
+      if (name === "on_interrupt") {
+        let v: unknown = value;
+        if (typeof v === "string") { try { v = JSON.parse(v); } catch { /* keep */ } }
         setInterrupt(v as InterruptInfo);
+      } else if (name === "CIRCUIT_BREAKER_TRIPPED") {
+        const v = (typeof value === "string" ? safeParse(value) : value) as { node_id?: string };
+        setBreakerEventNode(v?.node_id ?? null);
       }
     },
     onRunFinishedEvent: () => { applyState(); setRunning(false); },
-    onRunFailed: (p: unknown) => { console.error("[AGUI] run failed", p); setRunning(false); },
+    onRunFailed: (p: { error?: unknown }) => {
+      console.error("[AGUI] run failed", p);
+      setError(String((p && p.error) ?? "agent run failed"));
+      setRunning(false);
+    },
   }), [applyState]);
 
   const startRun = useCallback(async (simulate_runaway: boolean) => {
@@ -64,11 +80,14 @@ export function useBlastAgent() {
     } as AgentState);
     setStateObj(null);
     setInterrupt(null);
+    setError(null);
+    setBreakerEventNode(null);
     setRunning(true);
     try {
       await agent.runAgent({}, makeSubscriber());
     } catch (e) {
       console.error("[AGUI] runAgent error", e);
+      setError(e instanceof Error ? e.message : "could not reach the agent backend");
     } finally {
       setRunning(false);
     }
@@ -86,10 +105,15 @@ export function useBlastAgent() {
       );
     } catch (e) {
       console.error("[AGUI] resume error", e);
+      setError(e instanceof Error ? e.message : "resume failed");
     } finally {
       setRunning(false);
     }
   }, [makeSubscriber]);
 
-  return { state, interrupt, running, startRun, resume };
+  return { state, interrupt, running, error, breakerEventNode, startRun, resume };
+}
+
+function safeParse(s: string): unknown {
+  try { return JSON.parse(s); } catch { return null; }
 }

@@ -27,7 +27,9 @@ _BREAKER_HOLD = float(os.getenv("DEMO_BREAKER_HOLD", "2.5"))   # how long the br
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send, Command, interrupt
-from langgraph.checkpoint.memory import MemorySaver
+
+from checkpointer import get_checkpointer
+from llm import validate_step
 
 try:
     from copilotkit import CopilotKitState  # state extends this to auto-stream STATE_DELTA
@@ -112,7 +114,10 @@ async def validator_node(state: BlastRadiusState):
     node = dict(state["dag_nodes"][nid])
     r = await get_redis()
     with agent_attributes(f"validator-{nid}", nid, "CLOSED", state["run_id"]):
-        node = {**node, "status": "validated", "agent": f"validator-{nid}"}
+        verdict = await validate_step(node.get("label", nid), state.get("request", ""))
+        status = "validated" if verdict.get("safe", True) else "blocked"
+        node = {**node, "status": status, "agent": f"validator-{nid}",
+                "validation": verdict.get("reason", "")}
         await set_node_status(r, state["run_id"], nid, node)
     return {"dag_nodes": {nid: node}}
 
@@ -191,6 +196,9 @@ async def recover_node(state: BlastRadiusState):
     node = dict(state["dag_nodes"][nid])
     if _BREAKER_HOLD:
         await asyncio.sleep(_BREAKER_HOLD)                     # keep the breaker visibly OPEN (red pulse)
+    # "Resume with safe fallback" — human gate before the recovery agent heals the failed node.
+    interrupt({"node": nid, "recovery": True,
+               "plan": {"label": node.get("label", nid), "action": "Resume with safe fallback"}})
     with agent_attributes("recovery", nid, "HALF_OPEN", state["run_id"]):
         result = await run_recovery(r, state["run_id"], nid)
         done = {**node, "status": "done", "agent": "recovery"}
@@ -218,5 +226,6 @@ def build_graph():
                             ["recover", "router"])
     g.add_edge("recover", "router")
 
-    # checkpointer REQUIRED for interrupt() to pause/resume. MemorySaver is safe for sync+async.
-    return g.compile(checkpointer=MemorySaver())
+    # checkpointer REQUIRED for interrupt() to pause/resume. Durable Redis store in prod
+    # (survives restarts); in-memory fallback. See checkpointer.py.
+    return g.compile(checkpointer=get_checkpointer())

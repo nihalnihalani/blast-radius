@@ -1,0 +1,32 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis/redis-stack-server:latest
+        ports: ["6379:6379"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install deps
+        run: pip install -r services/agent/requirements.txt pytest pytest-asyncio
+      - name: Run tests
+        working-directory: services/agent
+        env: { REDIS_URL: "redis://localhost:6379", WEAVE_DISABLED: "1" }
+        run: pytest tests -q
+
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "20" }
+      - name: Install + typecheck + build
+        working-directory: apps/web
+        run: |
+          npm install --no-audit --no-fund
+          npx tsc --noEmit
+          npm run build

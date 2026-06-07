@@ -10,15 +10,22 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
 
-from config import AGENT_NAME
+from config import AGENT_NAME, ALLOWED_ORIGINS
+from logging_setup import configure_logging, get_logger
 from weave_setup import init_weave
+from checkpointer import setup_checkpointer
+from llm import llm_enabled
 from redis_client import get_redis, close_redis
 from breaker import keyspace_listener, force_reset
 from streams import ensure_group, seed_dlq
 from dag import read_dag
 from graph import build_graph
+
+configure_logging()
+log = get_logger("blast.main")
 
 # Background tasks + a fan-out of subscribers for the breaker control plane.
 _trip_queue: "asyncio.Queue[tuple[str, str]]" = asyncio.Queue()
@@ -39,28 +46,36 @@ async def _fan_out_trips() -> None:
 @contextlib.asynccontextmanager
 async def lifespan(app: FastAPI):
     init_weave()
+    await setup_checkpointer()
     r = await get_redis()
     await ensure_group(r)
     # Pre-seed one DLQ message so 'Resume with safe fallback' is instant during the demo.
     await seed_dlq(r, {"node_id": "update-lb", "action": "scale", "note": "pre-seeded"})
     _bg_tasks.append(asyncio.create_task(keyspace_listener(r, _trip_queue)))
     _bg_tasks.append(asyncio.create_task(_fan_out_trips()))
-    print("[main] startup complete")
+    log.info("startup complete (agent=%s, openai=%s)", AGENT_NAME, llm_enabled())
     yield
     for t in _bg_tasks:
         t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await t
     await close_redis()
+    log.info("shutdown complete")
 
 
-app = FastAPI(title="BLAST-RADIUS agent", lifespan=lifespan)
+app = FastAPI(title="BLAST-RADIUS agent", version="1.0.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
-    allow_methods=["*"],
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"error": "internal_error", "detail": str(exc)})
 
 # Build the compiled graph once; share it across both endpoints.
 GRAPH = build_graph()
@@ -73,11 +88,9 @@ _DESC = "Decomposes an infra change into a blast-radius DAG and executes it unde
 try:
     from ag_ui_langgraph import LangGraphAgent as AGUIAgent, add_langgraph_fastapi_endpoint
     add_langgraph_fastapi_endpoint(app, AGUIAgent(name=AGENT_NAME, graph=GRAPH, description=_DESC), "/agent")
-    print(f"[main] AG-UI agent '{AGENT_NAME}' mounted at /agent")
+    log.info("AG-UI agent '%s' mounted at /agent", AGENT_NAME)
 except Exception as e:
-    import traceback
-    print(f"[main] AG-UI endpoint NOT mounted: {e}")
-    traceback.print_exc()
+    log.exception("AG-UI endpoint NOT mounted: %s", e)
 
 # --- CopilotKit remote endpoint (kept for compatibility / Best-CopilotKit story) ----
 try:
@@ -88,9 +101,9 @@ try:
         agents=[LangGraphAGUIAgent(name=AGENT_NAME, description=_DESC, graph=GRAPH)],
     )
     add_fastapi_endpoint(app, sdk, "/copilotkit")
-    print(f"[main] CopilotKit agent '{AGENT_NAME}' mounted at /copilotkit")
+    log.info("CopilotKit agent '%s' mounted at /copilotkit", AGENT_NAME)
 except Exception as e:
-    print(f"[main] CopilotKit endpoint NOT mounted: {e}")
+    log.warning("CopilotKit endpoint NOT mounted: %s", e)
 
 
 # --- Breaker control-plane SSE (driven by Redis keyspace notifications) -------
@@ -123,29 +136,36 @@ async def breaker_events() -> StreamingResponse:
 
 
 # --- Control + introspection endpoints ----------------------------------------
+class ForceResetBody(BaseModel):
+    agent_id: str = "executor-update-lb"
+
+
 @app.post("/demo/force-reset")
-async def demo_force_reset(req: Request):
-    body = await req.json()
+async def demo_force_reset(body: ForceResetBody):
     r = await get_redis()
-    await force_reset(r, body.get("agent_id", "executor-update-lb"))
-    return {"ok": True}
-@app.post("/demo/force-reset")
-async def demo_force_reset(req: Request):
-    body = await req.json()
-    r = await get_redis()
-    await force_reset(r, body.get("agent_id", "executor-update-lb"))
-    return {"ok": True}
+    await force_reset(r, body.agent_id)
+    return {"ok": True, "agent_id": body.agent_id}
 
 
 @app.get("/demo/dag/{run_id}")
 async def demo_dag(run_id: str):
-    """Inspect the live DAG document in RedisJSON (used by tests + as a UI fallback)."""
+    """Inspect the live DAG document in RedisJSON (introspection / tests)."""
     r = await get_redis()
     return await read_dag(r, run_id) or {"error": "not found"}
 
 
 @app.get("/healthz")
 async def healthz():
-    r = await get_redis()
-    pong = await r.ping()
-    return {"ok": True, "redis": pong, "agent": AGENT_NAME}
+    """Liveness — is the process up."""
+    return {"ok": True, "agent": AGENT_NAME, "openai": llm_enabled()}
+
+
+@app.get("/readyz")
+async def readyz():
+    """Readiness — can we actually serve (Redis reachable)."""
+    try:
+        r = await get_redis()
+        pong = await r.ping()
+        return {"ready": bool(pong), "redis": pong}
+    except Exception as e:
+        return JSONResponse(status_code=503, content={"ready": False, "error": str(e)})

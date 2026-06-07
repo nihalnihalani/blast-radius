@@ -1,17 +1,36 @@
-# One-command Redis (RedisJSON + Search + Bloom) for BLAST-RADIUS.
-#   docker compose up -d        -> Redis on :6379 with keyspace notifications enabled
+# One-command full stack:  docker compose up --build
+#   redis-stack :6379 (+ RedisInsight :8001) · agent :8000 · cockpit :3000
 services:
   redis:
     image: redis/redis-stack:latest
     container_name: blast-redis
-    ports:
-      - "6379:6379"     # Redis
-      - "8001:8001"     # RedisInsight UI
-    command: >
-      redis-stack-server
-      --notify-keyspace-events KE$$x
+    ports: ["6379:6379", "8001:8001"]
+    command: redis-stack-server --notify-keyspace-events KE$$x
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 5
+
+  agent:
+    build: ./services/agent
+    container_name: blast-agent
+    environment:
+      REDIS_URL: redis://redis:6379
+      ALLOWED_ORIGINS: http://localhost:3000
+      CHECKPOINTER: redis
+      WEAVE_DISABLED: "1"          # set a WANDB_API_KEY + remove this to enable Weave tracing
+      # OPENAI_API_KEY: sk-...     # set to make the validator use GPT
+    ports: ["8000:8000"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_AGENT_HTTP_URL: http://localhost:8000/agent
+    container_name: blast-web
+    ports: ["3000:3000"]
+    depends_on: [agent]
